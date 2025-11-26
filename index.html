@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Cyberpunk Data Scanner</title>
+    <style>
+        body, html { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
+        
+        /* 视频层：作为背景 */
+        #video-feed {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1;
+            filter: contrast(1.2) brightness(1.1) grayscale(0.3); /* 稍微调整色调以适应赛博朋克感 */
+        }
+
+        /* UI层：叠加在视频之上 */
+        #ui-layer {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 2;
+            pointer-events: none; /* 让点击穿透 */
+            box-shadow: inset 0 0 100px rgba(0, 0, 0, 0.9);
+        }
+
+        /* 赛博朋克风格定义 */
+        :root { --main-color: #00ffcc; --alert-color: #ff3333; }
+        
+        .hud-text { color: var(--main-color); text-shadow: 0 0 5px var(--main-color); font-size: 12px; position: absolute; }
+        
+        /* 扫描线动画 */
+        .scanner-line {
+            width: 100%; height: 2px; background: var(--main-color); opacity: 0.5;
+            position: absolute; top: 0;
+            animation: scan 3s linear infinite;
+            box-shadow: 0 0 10px var(--main-color);
+        }
+
+        /* 中心瞄准器 */
+        .reticle {
+            position: absolute; top: 50%; left: 50%;
+            width: 200px; height: 200px;
+            transform: translate(-50%, -50%);
+            border: 1px solid rgba(0, 255, 204, 0.3);
+        }
+        .reticle::before, .reticle::after {
+            content: ''; position: absolute; width: 20px; height: 20px;
+            border-color: var(--main-color); border-style: solid;
+        }
+        .reticle::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+        .reticle::after { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+
+        /* 左侧数据栏 */
+        .data-column {
+            position: absolute; left: 20px; top: 20%; bottom: 20%; width: 100px;
+            display: flex; flex-direction: column; justify-content: space-between;
+        }
+        .random-data { font-size: 10px; color: rgba(0, 255, 204, 0.7); line-height: 1.5; }
+
+        /* 顶部罗盘装饰 */
+        .top-bar {
+            position: absolute; top: 10px; left: 10px; right: 10px; height: 30px;
+            border-bottom: 1px solid var(--main-color);
+            display: flex; justify-content: space-between; align-items: flex-end;
+        }
+
+        /* 动态追踪框 (由JS生成) */
+        .tracking-box {
+            position: absolute; border: 1px dashed var(--alert-color);
+            box-shadow: 0 0 5px var(--alert-color);
+            transition: all 0.2s ease-out;
+        }
+        .tracking-label {
+            background: var(--alert-color); color: #000; padding: 2px; font-size: 10px;
+            position: absolute; top: -15px; right: 0;
+        }
+
+        @keyframes scan {
+            0% { top: 0%; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+
+    <video id="video-feed" autoplay playsinline></video>
+
+    <div id="ui-layer">
+        <div class="scanner-line"></div>
+        
+        <div class="top-bar">
+            <span class="hud-text">SYS.ROOT.ADMIN</span>
+            <span class="hud-text" id="clock">00:00:00</span>
+            <span class="hud-text">REC ●</span>
+        </div>
+
+        <div class="data-column">
+            <div id="data-stream" class="random-data">initializing...</div>
+        </div>
+
+        <div class="reticle">
+            <div style="position:absolute; top:50%; left:50%; width:4px; height:4px; background:var(--main-color); transform:translate(-50%,-50%); border-radius:50%;"></div>
+            <span class="hud-text" style="bottom: -20px; width: 100%; text-align: center;">TARGET ACQUIRED</span>
+        </div>
+    </div>
+
+    <script>
+        // 1. 调用后置摄像头
+        const video = document.getElementById('video-feed');
+        
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        facingMode: { exact: "environment" } // 强制后置摄像头
+                    }
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                // 如果失败（例如电脑没有后置），尝试默认摄像头
+                console.log("Rear camera failed, trying default.", err);
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = stream;
+                } catch (e) {
+                    alert("无法访问摄像头，请确保使用HTTPS访问并允许权限。");
+                }
+            }
+        }
+        startCamera();
+
+        // 2. 模拟数据流滚动效果
+        function updateData() {
+            const chars = "ABCDEF0123456789";
+            let str = "";
+            for(let i=0; i<15; i++) {
+                let line = "";
+                for(let j=0; j<12; j++) {
+                    line += chars[Math.floor(Math.random() * chars.length)];
+                }
+                str += line + "<br>";
+            }
+            document.getElementById('data-stream').innerHTML = str;
+        }
+        setInterval(updateData, 100);
+
+        // 3. 模拟“检测到目标”的动态框 (为了视觉效果)
+        const uiLayer = document.getElementById('ui-layer');
+        
+        function createPhantomTarget() {
+            const box = document.createElement('div');
+            box.className = 'tracking-box';
+            
+            // 随机位置和大小
+            const w = Math.random() * 80 + 40;
+            const h = w; 
+            const x = Math.random() * (window.innerWidth - w);
+            const y = Math.random() * (window.innerHeight - h);
+            
+            box.style.width = w + 'px';
+            box.style.height = h + 'px';
+            box.style.left = x + 'px';
+            box.style.top = y + 'px';
+            
+            const label = document.createElement('div');
+            label.className = 'tracking-label';
+            label.innerText = 'ID_' + Math.floor(Math.random()*9999);
+            box.appendChild(label);
+
+            uiLayer.appendChild(box);
+
+            // 1秒后消失
+            setTimeout(() => { box.remove(); }, 1000);
+        }
+        // 每隔一段时间生成一个虚拟追踪框
+        setInterval(createPhantomTarget, 1200);
+
+        // 4. 更新时间
+        setInterval(() => {
+            const now = new Date();
+            document.getElementById('clock').innerText = now.toLocaleTimeString();
+        }, 1000);
+
+    </script>
+</body>
+</html>
