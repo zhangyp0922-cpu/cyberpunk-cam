@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Cyberpunk Tactical Scanner</title>
+    <title>Cyberpunk Tactical Scanner V2</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
@@ -15,28 +15,25 @@
         #video-feed {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1;
             filter: contrast(1.1) brightness(1.2) sepia(0.2) hue-rotate(180deg) saturate(1.5); 
-            /* 上面的滤镜是为了让画面看起来更像电子眼 */
             opacity: 0.8;
         }
 
-        /* 纯黑背景层，防止视频加载前白屏 */
         .backdrop {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 0;
         }
 
-        /* Canvas层：绘制高亮和UI */
+        /* Canvas层 */
         #detection-canvas {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 2;
             pointer-events: none;
         }
 
-        /* 纯装饰UI层 */
+        /* UI层 */
         #ui-layer {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 3;
             pointer-events: none;
         }
 
-        /* 装饰元素 */
         .hud-text { color: rgba(0, 255, 204, 0.8); text-shadow: 0 0 5px #00ffcc; font-size: 10px; position: absolute; }
         .center-cross {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -89,30 +86,25 @@
         let isDetecting = false;
         let lastTime = 0;
 
-        // --- 颜色配置系统 ---
-        // 红色：人类/生物 (高危)
-        // 青色：电子设备 (科技)
-        // 黄色：其他物体 (常规)
+        // 颜色配置
         const COLORS = {
-            person:     { r: 255, g: 50,  b: 50,  hex: '#FF3232' }, 
-            cell_phone: { r: 0,   g: 255, b: 255, hex: '#00FFFF' },
+            person:     { r: 255, g: 50,  b: 50,  hex: '#FF3232' }, // 红
+            cell_phone: { r: 0,   g: 255, b: 255, hex: '#00FFFF' }, // 青
             laptop:     { r: 0,   g: 255, b: 255, hex: '#00FFFF' },
-            tv:         { r: 0,   g: 255, b: 255, hex: '#00FFFF' },
             keyboard:   { r: 0,   g: 255, b: 255, hex: '#00FFFF' },
             mouse:      { r: 0,   g: 255, b: 255, hex: '#00FFFF' },
-            default:    { r: 255, g: 200, b: 0,   hex: '#FFC800' }
+            cup:        { r: 255, g: 200, b: 0,   hex: '#FFC800' }, // 黄
+            default:    { r: 255, g: 255, b: 255, hex: '#FFFFFF' }
         };
 
         function getColor(label) {
-            // 将标签标准化（有些模型返回带空格）
             const key = label.replace(' ', '_');
             return COLORS[key] || COLORS.default;
         }
 
-        // --- 初始化 ---
         async function init() {
             try {
-                // 加载 COCO-SSD 模型
+                // 加载轻量级模型
                 model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
                 startCamera();
             } catch (error) {
@@ -120,7 +112,6 @@
             }
         }
 
-        // --- 摄像头 ---
         async function startCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
@@ -139,10 +130,10 @@
                     loadingOverlay.style.opacity = 0;
                     setTimeout(() => loadingOverlay.remove(), 500);
                     isDetecting = true;
-                    predictLoop();
+                    // 【关键修复】使用 requestAnimationFrame 启动，确保传入时间戳
+                    requestAnimationFrame(predictLoop);
                 };
             } catch (err) {
-                // 降级处理：如果不让用后置，就用默认
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ video: true });
                     video.srcObject = stream;
@@ -152,7 +143,7 @@
                         loadingOverlay.style.opacity = 0;
                         setTimeout(() => loadingOverlay.remove(), 500);
                         isDetecting = true;
-                        predictLoop();
+                        requestAnimationFrame(predictLoop);
                     }
                 } catch(e) {
                     alert("无法调用摄像头");
@@ -160,14 +151,15 @@
             }
         }
 
-        // --- AI 循环 ---
         function predictLoop(timestamp) {
             if (!isDetecting || !model || video.readyState !== 4) {
                 requestAnimationFrame(predictLoop);
                 return;
             }
 
-            // 计算FPS
+            // 【关键修复】确保 timestamp 存在
+            if (!timestamp) timestamp = performance.now();
+
             if (timestamp) {
                 const fps = Math.round(1000 / (timestamp - lastTime));
                 if (timestamp % 10 === 0) fpsCounter.innerText = `FPS: ${fps}`;
@@ -180,16 +172,12 @@
             });
         }
 
-        // --- 核心：赛博朋克绘制逻辑 ---
         function drawCyberpunkHUD(predictions, time) {
-            // 清空画布
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            // 绘制全屏网格线（增加科技感背景）
             drawGrid();
 
             predictions.forEach(prediction => {
-                if (prediction.score < 0.60) return; // 过滤低置信度
+                if (prediction.score < 0.60) return;
 
                 const [x, y, w, h] = prediction.bbox;
                 const label = prediction.class.toUpperCase();
@@ -197,16 +185,15 @@
                 const colorHex = colorObj.hex;
                 const score = Math.floor(prediction.score * 100);
 
-                // 1. 绘制“战术锁定”包角 (四个L型)
+                // --- 1. 绘制战术包角 ---
                 ctx.strokeStyle = colorHex;
                 ctx.lineWidth = 3;
-                ctx.shadowBlur = 10; // 霓虹光晕
+                ctx.shadowBlur = 15;
                 ctx.shadowColor = colorHex;
 
-                const lineLen = Math.min(w, h) * 0.2; // 角落线的长度
+                const lineLen = Math.min(w, h) * 0.25;
 
                 ctx.beginPath();
-                
                 // 左上
                 ctx.moveTo(x, y + lineLen); ctx.lineTo(x, y); ctx.lineTo(x + lineLen, y);
                 // 右上
@@ -215,58 +202,70 @@
                 ctx.moveTo(x + w, y + h - lineLen); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - lineLen, y + h);
                 // 左下
                 ctx.moveTo(x + lineLen, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - lineLen);
-                
                 ctx.stroke();
 
-                // 2. 绘制内部扫描光束 (上下移动)
-                // 使用时间戳实现动画
-                const scanSpeed = 0.2; 
+                // --- 2. 绘制内部扫描光束 (关键修复与增强) ---
+                // 使用 save/restore 和 clip 确保光束只在框内
+                ctx.save(); 
+                ctx.beginPath();
+                ctx.rect(x, y, w, h);
+                ctx.clip(); // 裁剪区域：之后的绘图只在这个矩形内显示
+
+                // 计算光束位置 (速度变慢一点看起来更高级)
+                const scanSpeed = 0.15; 
                 const scanY = y + (time * scanSpeed) % h;
                 
+                // 绘制光束
                 ctx.beginPath();
                 ctx.moveTo(x, scanY);
                 ctx.lineTo(x + w, scanY);
-                ctx.lineWidth = 1;
-                ctx.strokeStyle = `rgba(${colorObj.r}, ${colorObj.g}, ${colorObj.b}, 0.5)`;
+                ctx.strokeStyle = `rgba(${colorObj.r}, ${colorObj.g}, ${colorObj.b}, 1)`; // 不透明度调高
+                ctx.lineWidth = 4; // 线条加粗
+                ctx.shadowColor = "white"; // 增加白色高光
+                ctx.shadowBlur = 10;
                 ctx.stroke();
 
-                // 3. 绘制填充背景 (半透明)
-                ctx.fillStyle = `rgba(${colorObj.r}, ${colorObj.g}, ${colorObj.b}, 0.1)`;
+                // 绘制淡淡的背景填充
+                ctx.fillStyle = `rgba(${colorObj.r}, ${colorObj.g}, ${colorObj.b}, 0.15)`;
                 ctx.fillRect(x, y, w, h);
-
-                // 4. 绘制连接引线和标签
-                ctx.shadowBlur = 0; // 文字不需要发光太强
-                const labelX = x + w + 10;
-                const labelY = y;
                 
-                // 画折线
+                ctx.restore(); // 恢复画布状态，防止 clip 影响后续绘图
+
+                // --- 3. 标签与引线 ---
+                ctx.shadowBlur = 0;
+                const labelX = x + w + 15;
+                const labelY = y + 10; // 稍微下移
+                
+                // 折线
                 ctx.beginPath();
                 ctx.moveTo(x + w, y);
-                ctx.lineTo(labelX, labelY - 10);
-                ctx.lineTo(labelX + 100, labelY - 10); // 标签下划线
+                ctx.lineTo(labelX - 5, labelY - 5);
+                ctx.lineTo(labelX + 90, labelY - 5);
                 ctx.strokeStyle = colorHex;
                 ctx.lineWidth = 1;
                 ctx.stroke();
 
-                // 标签文字
+                // 标签背景 (让文字更清晰)
+                // ctx.fillStyle = "rgba(0,0,0,0.5)";
+                // ctx.fillRect(labelX, labelY - 20, 100, 35);
+
+                // 文字
                 ctx.fillStyle = colorHex;
                 ctx.font = 'bold 16px "Courier New"';
-                ctx.fillText(`${label}`, labelX, labelY - 15);
+                ctx.fillText(label, labelX, labelY - 8);
                 
+                ctx.fillStyle = "rgba(255,255,255,0.8)";
                 ctx.font = '12px "Courier New"';
-                ctx.fillStyle = "rgba(255,255,255,0.7)";
-                ctx.fillText(`CONF: ${score}%`, labelX, labelY);
-                ctx.fillText(`DIST: ${(1000/w).toFixed(1)}m`, labelX, labelY + 12); // 伪造的距离数据
+                ctx.fillText(`ID_${score} [LOCKED]`, labelX, labelY + 8);
             });
         }
 
         function drawGrid() {
-            // 绘制淡淡的绿色网格，增强空间感
-            ctx.strokeStyle = "rgba(0, 255, 204, 0.1)";
+            ctx.strokeStyle = "rgba(0, 255, 204, 0.08)";
             ctx.lineWidth = 1;
             ctx.shadowBlur = 0;
             
-            const gridSize = 100;
+            const gridSize = 80;
             const w = canvas.width;
             const h = canvas.height;
 
