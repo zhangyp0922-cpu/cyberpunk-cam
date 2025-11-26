@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Cyberpunk AI Scanner</title>
+    <title>Cyberpunk AI Scanner Fixed</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
@@ -15,14 +15,14 @@
         #video-feed {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1;
             filter: contrast(1.2) brightness(1.1) grayscale(0.3);
-            transform: scaleX(-1); /* 很多后置摄像头需要镜像翻转才自然，如果方向反了去掉这行 */
+            /* 【修复】移除了 transform: scaleX(-1); 解决了镜像问题 */
         }
 
         /* Canvas层：用于绘制AI检测框，必须完美覆盖视频 */
         #detection-canvas {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 2;
             pointer-events: none;
-            transform: scaleX(-1); /* 保持和视频一样的镜像翻转 */
+            /* 【修复】移除了 transform: scaleX(-1); 解决了文字镜像问题 */
         }
 
         /* UI层：叠加在最上层 */
@@ -61,11 +61,12 @@
 
         /* 左侧数据栏 */
         .data-column {
-            position: absolute; left: 20px; top: 20%; bottom: 20%; width: 120px;
+            position: absolute; left: 20px; top: 20%; bottom: 20%; width: 130px;
             display: flex; flex-direction: column; justify-content: flex-start;
+            pointer-events: none;
         }
-        .random-data { font-size: 10px; color: rgba(0, 255, 204, 0.7); line-height: 1.5; overflow: hidden; height: 100%;}
-        .status-text { color: var(--alert-color); font-weight: bold; margin-bottom: 10px;}
+        .random-data { font-size: 10px; color: rgba(0, 255, 204, 0.7); line-height: 1.5; overflow: hidden; height: 100%; }
+        .status-text { color: var(--alert-color); font-weight: bold; margin-bottom: 10px; font-size: 12px;}
 
         /* 顶部栏 */
         .top-bar {
@@ -97,7 +98,7 @@
         </div>
 
         <div class="data-column">
-             <div class="status-text">>> ANALYSIS DATA</div>
+             <div class="status-text">>> ANALYSIS LOG</div>
             <div id="data-stream" class="random-data">Loading neural network model...<br>Please wait...</div>
         </div>
 
@@ -107,99 +108,120 @@
     </div>
 
     <script>
-        // 获取页面元素
         const video = document.getElementById('video-feed');
         const canvas = document.getElementById('detection-canvas');
         const ctx = canvas.getContext('2d');
         const statusText = document.getElementById('sys-status');
         const dataStream = document.getElementById('data-stream');
 
-        let model = null; // 用于存储加载的AI模型
+        let model = null;
         let isDetecting = false;
+        let lastDetectedLabel = "";
 
         // --- 1. 初始化与 AI 模型加载 ---
         async function init() {
             try {
-                // 加载 COCO-SSD 模型
-                model = await cocoSsd.load();
+                // 尝试加载轻量级模型以加快速度
+                model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
                 statusText.innerText = "AI CORE ONLINE. ACQUIRING VIDEO...";
-                dataStream.innerHTML += "<br>>> Model loaded.<br>>> Connecting camera...";
-                // 模型加载完成后，启动摄像头
+                updateSideData(">> Model loaded successfully.");
+                updateSideData(">> Connecting optical sensors...");
                 startCamera();
             } catch (error) {
                 console.error("AI Load Error:", error);
                 statusText.innerText = "SYS ERROR: AI LOAD FAILED";
                 statusText.style.color = "red";
+                updateSideData(">> ERROR: Could not load Neural Net.");
             }
         }
 
         // --- 2. 摄像头调用 ---
         async function startCamera() {
             try {
-                // 尝试优先使用环境(后置)摄像头
+                // 明确请求后置摄像头
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment" },
+                    video: { 
+                        facingMode: { exact: "environment" },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 } 
+                    },
                     audio: false
                 });
                 video.srcObject = stream;
                 
-                // 视频数据加载成功后开始检测循环
-                video.onloadeddata = () => {
+                video.onloadedmetadata = () => {
                     statusText.innerText = "SYSTEM READY // SCANNING";
-                    // 调整 Canvas 分辨率以匹配视频源分辨率，确保绘图准确
+                    // 关键：确保Canvas尺寸与视频实际播放尺寸一致
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
                     isDetecting = true;
-                    predictLoop(); // 开始 AI 循环
+                    updateSideData(">> Video feed acquired.");
+                    updateSideData(">> Starting visual analysis...");
+                    predictLoop();
                 };
             } catch (err) {
-                 statusText.innerText = "CAMERA ERROR";
-                 alert("无法访问摄像头，请检查权限或使用HTTPS。");
+                 console.log("Rear camera failed, trying default.", err);
+                 // 如果强制后置失败，回退到默认摄像头
+                 try {
+                     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                     video.srcObject = stream;
+                     video.onloadedmetadata = () => {
+                        statusText.innerText = "SYSTEM READY // (FALLBACK CAM)";
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        isDetecting = true;
+                        predictLoop();
+                     }
+                 } catch(e) {
+                     statusText.innerText = "CAMERA ERROR";
+                     statusText.style.color = "red";
+                     updateSideData(">> CRITICAL: Camera access denied.");
+                 }
             }
         }
 
         // --- 3. AI 实时检测循环 ---
         function predictLoop() {
-            if (!isDetecting || !model) return;
+            if (!isDetecting || !model || video.readyState !== video.HAVE_ENOUGH_DATA) {
+                requestAnimationFrame(predictLoop);
+                return;
+            }
 
-            // 将视频帧传入模型进行检测
             model.detect(video).then(predictions => {
-                // 获取到预测结果后，绘制框体
                 drawBoundingBoxes(predictions);
-                // 使用 requestAnimationFrame 进行下一帧的预测，形成循环
                 requestAnimationFrame(predictLoop);
             });
         }
 
-        // --- 4. 绘制赛博朋克风格的检测框 ---
+        // --- 4. 绘制检测框 ---
         function drawBoundingBoxes(predictions) {
-            // 清空上一帧的画布
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // 获取 CSS 中定义的颜色变量
             const mainColor = getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim();
-            const alertColor = getComputedStyle(document.documentElement).getPropertyValue('--alert-color').trim();
+            // const alertColor = getComputedStyle(document.documentElement).getPropertyValue('--alert-color').trim();
 
             predictions.forEach(prediction => {
-                // 过滤掉置信度太低的结果 (小于 60%)
-                if (prediction.score < 0.6) return;
+                // 提高置信度阈值，减少误报闪烁
+                if (prediction.score < 0.65) return;
 
-                // 获取坐标和尺寸: [x, y, width, height]
                 const [x, y, width, height] = prediction.bbox;
                 const label = prediction.class.toUpperCase();
                 const score = Math.floor(prediction.score * 100);
 
-                // 赛博朋克风格设定
+                // 绘图样式
                 ctx.strokeStyle = mainColor;
                 ctx.lineWidth = 2;
-                // 添加霓虹光晕效果
-                ctx.shadowBlur = 10;
+                ctx.shadowBlur = 15; // 增强霓虹光晕
                 ctx.shadowColor = mainColor;
+                ctx.fillStyle = mainColor;
 
                 // 绘制矩形框
                 ctx.beginPath();
-                // 绘制带有缺角的赛博朋克框
                 const cornerSize = 15;
+                // 简单的矩形带光晕
+                ctx.rect(x, y, width, height);
+                // 如果想要复杂的缺角框，取消下面注释，并注释掉上面的 ctx.rect
+                /*
                 ctx.moveTo(x + cornerSize, y);
                 ctx.lineTo(x + width - cornerSize, y);
                 ctx.lineTo(x + width, y + cornerSize);
@@ -208,58 +230,53 @@
                 ctx.lineTo(x + cornerSize, y + height);
                 ctx.lineTo(x, y + height - cornerSize);
                 ctx.lineTo(x, y + cornerSize);
+                */
                 ctx.closePath();
                 ctx.stroke();
 
                 // 绘制文字标签背景
-                ctx.fillStyle = mainColor;
-                const textWidth = ctx.measureText(label).width + 40;
-                ctx.fillRect(x, y - 18, textWidth, 18);
+                ctx.shadowBlur = 0; // 文字背景不需要光晕
+                ctx.fillRect(x, y - 20, ctx.measureText(label).width + 50, 20);
 
                 // 绘制文字
-                ctx.fillStyle = "#000"; // 黑色文字在亮色背景上
-                ctx.font = 'bold 12px "Courier New", monospace';
-                ctx.shadowBlur = 0; // 文字不需要光晕，保持清晰
+                ctx.fillStyle = "#000"; 
+                ctx.font = 'bold 14px "Courier New", monospace';
                 ctx.fillText(`${label} [${score}%]`, x + 5, y - 5);
 
-                // 偶尔更新侧边数据栏显示检测到的物体
-                if (Math.random() > 0.95) {
-                     updateSideData(`DETECTED: ${label}_${score}`);
+                // 记录日志（避免重复记录）
+                if (label !== lastDetectedLabel && Math.random() > 0.7) {
+                     updateSideData(`>> DETECTED: ${label} (${score}%)`);
+                     lastDetectedLabel = label;
+                     // 3秒后重置记录状态，允许再次记录相同物体
+                     setTimeout(() => { lastDetectedLabel = ""; }, 3000);
                 }
             });
         }
 
         // --- 辅助功能 ---
-        
-        // 更新侧边数据流
         let dataLines = [];
         function updateSideData(newLine) {
             dataLines.push(newLine);
-            if (dataLines.length > 20) dataLines.shift(); // 保持最新的20行
+            if (dataLines.length > 25) dataLines.shift();
             dataStream.innerHTML = dataLines.join('<br>');
-            // 自动滚动到底部
             dataStream.scrollTop = dataStream.scrollHeight;
         }
 
-        // 填充一些初始背景数据
-        for(let i=0; i<15; i++) updateSideData(generateHexData());
-
+        // 填充背景数据
+        for(let i=0; i<10; i++) updateSideData(generateHexData());
         function generateHexData() {
             const chars = "ABCDEF0123456789";
-            let line = ">> ";
-            for(let j=0; j<16; j++) line += chars[Math.floor(Math.random() * chars.length)];
+            let line = "";
+            for(let j=0; j<14; j++) line += chars[Math.floor(Math.random() * chars.length)];
             return line;
         }
-        setInterval(() => { if(Math.random()>0.8) updateSideData(generateHexData()); }, 200);
+        setInterval(() => { if(Math.random()>0.85) updateSideData(generateHexData()); }, 250);
 
-        // 更新时钟
         setInterval(() => {
             document.getElementById('clock').innerText = new Date().toLocaleTimeString();
         }, 1000);
 
-        // 启动程序
         init();
-
     </script>
 </body>
 </html>
