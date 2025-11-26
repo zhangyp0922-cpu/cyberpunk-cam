@@ -3,20 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Cyberpunk Data Scanner</title>
+    <title>Cyberpunk AI Scanner</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
     <style>
         body, html { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
         
         /* 视频层：作为背景 */
         #video-feed {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1;
-            filter: contrast(1.2) brightness(1.1) grayscale(0.3); /* 稍微调整色调以适应赛博朋克感 */
+            filter: contrast(1.2) brightness(1.1) grayscale(0.3);
+            transform: scaleX(-1); /* 很多后置摄像头需要镜像翻转才自然，如果方向反了去掉这行 */
         }
 
-        /* UI层：叠加在视频之上 */
-        #ui-layer {
+        /* Canvas层：用于绘制AI检测框，必须完美覆盖视频 */
+        #detection-canvas {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 2;
-            pointer-events: none; /* 让点击穿透 */
+            pointer-events: none;
+            transform: scaleX(-1); /* 保持和视频一样的镜像翻转 */
+        }
+
+        /* UI层：叠加在最上层 */
+        #ui-layer {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 3;
+            pointer-events: none;
             box-shadow: inset 0 0 100px rgba(0, 0, 0, 0.9);
         }
 
@@ -49,27 +61,17 @@
 
         /* 左侧数据栏 */
         .data-column {
-            position: absolute; left: 20px; top: 20%; bottom: 20%; width: 100px;
-            display: flex; flex-direction: column; justify-content: space-between;
+            position: absolute; left: 20px; top: 20%; bottom: 20%; width: 120px;
+            display: flex; flex-direction: column; justify-content: flex-start;
         }
-        .random-data { font-size: 10px; color: rgba(0, 255, 204, 0.7); line-height: 1.5; }
+        .random-data { font-size: 10px; color: rgba(0, 255, 204, 0.7); line-height: 1.5; overflow: hidden; height: 100%;}
+        .status-text { color: var(--alert-color); font-weight: bold; margin-bottom: 10px;}
 
-        /* 顶部罗盘装饰 */
+        /* 顶部栏 */
         .top-bar {
             position: absolute; top: 10px; left: 10px; right: 10px; height: 30px;
             border-bottom: 1px solid var(--main-color);
             display: flex; justify-content: space-between; align-items: flex-end;
-        }
-
-        /* 动态追踪框 (由JS生成) */
-        .tracking-box {
-            position: absolute; border: 1px dashed var(--alert-color);
-            box-shadow: 0 0 5px var(--alert-color);
-            transition: all 0.2s ease-out;
-        }
-        .tracking-label {
-            background: var(--alert-color); color: #000; padding: 2px; font-size: 10px;
-            position: absolute; top: -15px; right: 0;
         }
 
         @keyframes scan {
@@ -82,103 +84,181 @@
 </head>
 <body>
 
-    <video id="video-feed" autoplay playsinline></video>
+    <video id="video-feed" autoplay playsinline muted></video>
+    <canvas id="detection-canvas"></canvas>
 
     <div id="ui-layer">
         <div class="scanner-line"></div>
         
         <div class="top-bar">
-            <span class="hud-text">SYS.ROOT.ADMIN</span>
+            <span class="hud-text" id="sys-status">INITIALIZING AI...</span>
             <span class="hud-text" id="clock">00:00:00</span>
-            <span class="hud-text">REC ●</span>
+            <span class="hud-text">NET: ON</span>
         </div>
 
         <div class="data-column">
-            <div id="data-stream" class="random-data">initializing...</div>
+             <div class="status-text">>> ANALYSIS DATA</div>
+            <div id="data-stream" class="random-data">Loading neural network model...<br>Please wait...</div>
         </div>
 
         <div class="reticle">
             <div style="position:absolute; top:50%; left:50%; width:4px; height:4px; background:var(--main-color); transform:translate(-50%,-50%); border-radius:50%;"></div>
-            <span class="hud-text" style="bottom: -20px; width: 100%; text-align: center;">TARGET ACQUIRED</span>
         </div>
     </div>
 
     <script>
-        // 1. 调用后置摄像头
+        // 获取页面元素
         const video = document.getElementById('video-feed');
-        
+        const canvas = document.getElementById('detection-canvas');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('sys-status');
+        const dataStream = document.getElementById('data-stream');
+
+        let model = null; // 用于存储加载的AI模型
+        let isDetecting = false;
+
+        // --- 1. 初始化与 AI 模型加载 ---
+        async function init() {
+            try {
+                // 加载 COCO-SSD 模型
+                model = await cocoSsd.load();
+                statusText.innerText = "AI CORE ONLINE. ACQUIRING VIDEO...";
+                dataStream.innerHTML += "<br>>> Model loaded.<br>>> Connecting camera...";
+                // 模型加载完成后，启动摄像头
+                startCamera();
+            } catch (error) {
+                console.error("AI Load Error:", error);
+                statusText.innerText = "SYS ERROR: AI LOAD FAILED";
+                statusText.style.color = "red";
+            }
+        }
+
+        // --- 2. 摄像头调用 ---
         async function startCamera() {
             try {
+                // 尝试优先使用环境(后置)摄像头
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { 
-                        facingMode: { exact: "environment" } // 强制后置摄像头
-                    }
+                    video: { facingMode: "environment" },
+                    audio: false
                 });
                 video.srcObject = stream;
+                
+                // 视频数据加载成功后开始检测循环
+                video.onloadeddata = () => {
+                    statusText.innerText = "SYSTEM READY // SCANNING";
+                    // 调整 Canvas 分辨率以匹配视频源分辨率，确保绘图准确
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    isDetecting = true;
+                    predictLoop(); // 开始 AI 循环
+                };
             } catch (err) {
-                // 如果失败（例如电脑没有后置），尝试默认摄像头
-                console.log("Rear camera failed, trying default.", err);
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                    video.srcObject = stream;
-                } catch (e) {
-                    alert("无法访问摄像头，请确保使用HTTPS访问并允许权限。");
-                }
+                 statusText.innerText = "CAMERA ERROR";
+                 alert("无法访问摄像头，请检查权限或使用HTTPS。");
             }
         }
-        startCamera();
 
-        // 2. 模拟数据流滚动效果
-        function updateData() {
-            const chars = "ABCDEF0123456789";
-            let str = "";
-            for(let i=0; i<15; i++) {
-                let line = "";
-                for(let j=0; j<12; j++) {
-                    line += chars[Math.floor(Math.random() * chars.length)];
-                }
-                str += line + "<br>";
-            }
-            document.getElementById('data-stream').innerHTML = str;
+        // --- 3. AI 实时检测循环 ---
+        function predictLoop() {
+            if (!isDetecting || !model) return;
+
+            // 将视频帧传入模型进行检测
+            model.detect(video).then(predictions => {
+                // 获取到预测结果后，绘制框体
+                drawBoundingBoxes(predictions);
+                // 使用 requestAnimationFrame 进行下一帧的预测，形成循环
+                requestAnimationFrame(predictLoop);
+            });
         }
-        setInterval(updateData, 100);
 
-        // 3. 模拟“检测到目标”的动态框 (为了视觉效果)
-        const uiLayer = document.getElementById('ui-layer');
+        // --- 4. 绘制赛博朋克风格的检测框 ---
+        function drawBoundingBoxes(predictions) {
+            // 清空上一帧的画布
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 获取 CSS 中定义的颜色变量
+            const mainColor = getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim();
+            const alertColor = getComputedStyle(document.documentElement).getPropertyValue('--alert-color').trim();
+
+            predictions.forEach(prediction => {
+                // 过滤掉置信度太低的结果 (小于 60%)
+                if (prediction.score < 0.6) return;
+
+                // 获取坐标和尺寸: [x, y, width, height]
+                const [x, y, width, height] = prediction.bbox;
+                const label = prediction.class.toUpperCase();
+                const score = Math.floor(prediction.score * 100);
+
+                // 赛博朋克风格设定
+                ctx.strokeStyle = mainColor;
+                ctx.lineWidth = 2;
+                // 添加霓虹光晕效果
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = mainColor;
+
+                // 绘制矩形框
+                ctx.beginPath();
+                // 绘制带有缺角的赛博朋克框
+                const cornerSize = 15;
+                ctx.moveTo(x + cornerSize, y);
+                ctx.lineTo(x + width - cornerSize, y);
+                ctx.lineTo(x + width, y + cornerSize);
+                ctx.lineTo(x + width, y + height - cornerSize);
+                ctx.lineTo(x + width - cornerSize, y + height);
+                ctx.lineTo(x + cornerSize, y + height);
+                ctx.lineTo(x, y + height - cornerSize);
+                ctx.lineTo(x, y + cornerSize);
+                ctx.closePath();
+                ctx.stroke();
+
+                // 绘制文字标签背景
+                ctx.fillStyle = mainColor;
+                const textWidth = ctx.measureText(label).width + 40;
+                ctx.fillRect(x, y - 18, textWidth, 18);
+
+                // 绘制文字
+                ctx.fillStyle = "#000"; // 黑色文字在亮色背景上
+                ctx.font = 'bold 12px "Courier New", monospace';
+                ctx.shadowBlur = 0; // 文字不需要光晕，保持清晰
+                ctx.fillText(`${label} [${score}%]`, x + 5, y - 5);
+
+                // 偶尔更新侧边数据栏显示检测到的物体
+                if (Math.random() > 0.95) {
+                     updateSideData(`DETECTED: ${label}_${score}`);
+                }
+            });
+        }
+
+        // --- 辅助功能 ---
         
-        function createPhantomTarget() {
-            const box = document.createElement('div');
-            box.className = 'tracking-box';
-            
-            // 随机位置和大小
-            const w = Math.random() * 80 + 40;
-            const h = w; 
-            const x = Math.random() * (window.innerWidth - w);
-            const y = Math.random() * (window.innerHeight - h);
-            
-            box.style.width = w + 'px';
-            box.style.height = h + 'px';
-            box.style.left = x + 'px';
-            box.style.top = y + 'px';
-            
-            const label = document.createElement('div');
-            label.className = 'tracking-label';
-            label.innerText = 'ID_' + Math.floor(Math.random()*9999);
-            box.appendChild(label);
-
-            uiLayer.appendChild(box);
-
-            // 1秒后消失
-            setTimeout(() => { box.remove(); }, 1000);
+        // 更新侧边数据流
+        let dataLines = [];
+        function updateSideData(newLine) {
+            dataLines.push(newLine);
+            if (dataLines.length > 20) dataLines.shift(); // 保持最新的20行
+            dataStream.innerHTML = dataLines.join('<br>');
+            // 自动滚动到底部
+            dataStream.scrollTop = dataStream.scrollHeight;
         }
-        // 每隔一段时间生成一个虚拟追踪框
-        setInterval(createPhantomTarget, 1200);
 
-        // 4. 更新时间
+        // 填充一些初始背景数据
+        for(let i=0; i<15; i++) updateSideData(generateHexData());
+
+        function generateHexData() {
+            const chars = "ABCDEF0123456789";
+            let line = ">> ";
+            for(let j=0; j<16; j++) line += chars[Math.floor(Math.random() * chars.length)];
+            return line;
+        }
+        setInterval(() => { if(Math.random()>0.8) updateSideData(generateHexData()); }, 200);
+
+        // 更新时钟
         setInterval(() => {
-            const now = new Date();
-            document.getElementById('clock').innerText = now.toLocaleTimeString();
+            document.getElementById('clock').innerText = new Date().toLocaleTimeString();
         }, 1000);
+
+        // 启动程序
+        init();
 
     </script>
 </body>
